@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% block title %}Siniestros{% endblock %}
+{% block content %}
+<h1>Siniestros</h1>
+<div class="card">
+    <form method="get" class="filters">
+        <div><label class="muted">Buscar</label><br>
+            <input type="text" name="q" value="{{ filters.q }}" placeholder="Número o cliente"></div>
+        <div><label class="muted">Aseguradora</label><br>
+            <select name="insurer">
+                <option value="">Todas</option>
+                {% for insurer in insurers %}
+                <option value="{{ insurer.id }}" {% if filters.insurer == insurer.id|stringformat:"s" %}selected{% endif %}>{{ insurer.name }}</option>
+                {% endfor %}
+            </select></div>
+        <div><label class="muted">Estado</label><br>
+            <select name="status">
+                <option value="">Todos</option>
+                {% for value, label in statuses %}
+                <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select></div>
+        <button type="submit">Filtrar</button>
+        <a class="btn btn-secondary" href="{% url 'claims:list' %}">Limpiar</a>
+    </form>
+</div>
+<div class="card">
+    <table>
+        <tr>
+            <th>Número</th><th>Fecha</th><th>Cliente</th><th>Póliza</th><th>Aseguradora</th>
+            <th>Estado</th><th class="num">Reclamado</th><th class="num">Pagado</th>
+        </tr>
+        {% for claim in claims %}
+        <tr>
+            <td><a href="{% url 'claims:detail' claim.pk %}">{{ claim.number }}</a></td>
+            <td>{{ claim.reported_at|date:"d/m/Y" }}</td>
+            <td>{{ claim.policy.client.full_name }}</td>
+            <td>{{ claim.policy.number }}</td>
+            <td>{{ claim.policy.insurer.name }}</td>
+            <td><span class="badge badge-{{ claim.status }}">{{ claim.get_status_display }}</span></td>
+            <td class="num">{{ claim.amount_claimed|intcomma }}</td>
+            <td class="num">{{ claim.total_paid|default:0|intcomma }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="muted">No hay siniestros con esos filtros.</td></tr>
+        {% endfor %}
+    </table>
+</div>
+{% endblock %}

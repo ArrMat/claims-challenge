@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Tablero{% endblock %}
+{% block content %}
+<h1>Tablero</h1>
+<p class="muted">Hoy: {{ today|date:"d/m/Y" }}</p>
+<div class="stats">
+    <div class="card"><div class="muted">Abiertos</div><div class="stat-value">{{ open_claims }}</div></div>
+    <div class="card"><div class="muted">En revisión</div><div class="stat-value">{{ in_review_claims }}</div></div>
+    <div class="card"><div class="muted">Denunciados este mes</div><div class="stat-value">{{ reported_this_month }}</div></div>
+</div>
+<div class="card">
+    <h3>Siniestros por estado</h3>
+    <table>
+        <tr><th>Estado</th><th class="num">Cantidad</th></tr>
+        {% for row in by_status %}<tr><td>{{ row.status }}</td><td class="num">{{ row.total }}</td></tr>{% endfor %}
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,22 @@
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Siniestros{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+<header>
+    <strong>Gestión de Siniestros</strong>
+    <a href="{% url 'claims:dashboard' %}">Tablero</a>
+    <a href="{% url 'claims:list' %}">Siniestros</a>
+    <a href="{% url 'claims:create' %}">Nuevo siniestro</a>
+    <a href="{% url 'admin:index' %}">Admin</a>
+</header>
+<main>
+    {% if messages %}<ul class="messages">{% for m in messages %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>

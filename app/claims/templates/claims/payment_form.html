@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Registrar pago{% endblock %}
+{% block content %}
+<h1>Registrar pago — {{ claim.number }}</h1>
+<div class="card">
+    <form method="post">{% csrf_token %}
+        {{ form.non_field_errors }}
+        {% for field in form %}
+        <div class="form-row">{{ field.label_tag }} {{ field }} {{ field.errors }}</div>
+        {% endfor %}
+        <button type="submit">Registrar</button>
+        <a class="btn btn-secondary" href="{% url 'claims:detail' claim.pk %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}

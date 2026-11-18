@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% block title %}Siniestro {{ claim.number }}{% endblock %}
+{% block content %}
+<h1>Siniestro {{ claim.number }} <span class="badge badge-{{ claim.status }}">{{ claim.get_status_display }}</span></h1>
+<div class="card">
+    <p><strong>Cliente:</strong> {{ claim.policy.client.full_name }} (DNI {{ claim.policy.client.document }})</p>
+    <p><strong>Póliza:</strong> {{ claim.policy.number }} — {{ claim.policy.insurer.name }}</p>
+    <p><strong>Denunciado:</strong> {{ claim.reported_at|date:"d/m/Y" }} — <strong>Causa:</strong> {{ claim.cause }}</p>
+    {% if claim.description %}<p>{{ claim.description }}</p>{% endif %}
+</div>
+<div class="stats">
+    <div class="card"><div class="muted">Reclamado</div><div class="stat-value">{{ claim.amount_claimed|intcomma }}</div></div>
+    <div class="card"><div class="muted">Pagado</div><div class="stat-value">{{ total_paid|default:0|intcomma }}</div></div>
+    <div class="card"><div class="muted">Pendiente</div><div class="stat-value">{{ pending_amount|intcomma }}</div></div>
+</div>
+<div class="card">
+    <h3>Pagos</h3>
+    <table>
+        <tr><th>Fecha</th><th>Referencia</th><th class="num">Monto</th></tr>
+        {% for payment in payments %}
+        <tr><td>{{ payment.paid_at|date:"d/m/Y" }}</td><td>{{ payment.reference }}</td><td class="num">{{ payment.amount|intcomma }}</td></tr>
+        {% empty %}
+        <tr><td colspan="3" class="muted">Sin pagos registrados.</td></tr>
+        {% endfor %}
+    </table>
+    <p><a class="btn" href="{% url 'claims:payment_create' claim.pk %}">Registrar pago</a></p>
+</div>
+{% endblock %}
