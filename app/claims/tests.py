@@ -73,6 +73,16 @@ class ClaimDetailTests(TestCase):
         self.assertEqual(response.context["total_paid"], Decimal("500"))
         self.assertEqual(response.context["pending_amount"], Decimal("500"))
 
+    def test_claim_without_payments_shows_zero_paid_and_full_pending(self):
+        # Ticket 1: SUM over no rows is NULL -> total_paid() was None and the page crashed.
+        claim = make_claim(amount_claimed=Decimal("1000.00"))
+
+        response = self.client.get(reverse("claims:detail", args=[claim.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["total_paid"], 0)
+        self.assertEqual(response.context["pending_amount"], Decimal("1000.00"))
+
 
 class ClaimListTests(TestCase):
     url = reverse("claims:list")

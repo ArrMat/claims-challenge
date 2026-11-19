@@ -76,7 +76,7 @@ class Claim(models.Model):
         return self.number
 
     def total_paid(self):
-        return self.payments.aggregate(total=Sum("amount"))["total"]
+        return self.payments.aggregate(total=Sum("amount"))["total"] or 0
 
     def pending_amount(self):
         return self.amount_claimed - self.total_paid()

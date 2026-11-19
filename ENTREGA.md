@@ -1,4 +1,19 @@
-## Problemas encontrados, fuera del scope del challenge
+# Tickets de soporte
+
+## Ticket 1
+- **Causa**: `Claim.total_paid()` devuelve `None` cuando el siniestro no tiene pagos, porque `SUM` sobre cero filas da `NULL` y `aggregate(...)` lo entrega como `{"total": None}`, no como `0`. Eso rompe `pending_amount()` (`Decimal("None")` lanza `InvalidOperation`) y la comparación en `views.py:87` (`None >= ...` lanza `TypeError`).
+  ```python
+  def total_paid(self):
+      return self.payments.aggregate(total=Sum("amount"))["total"]
+  ```
+- **Cómo se encontró**: al abrir el detalle de un siniestro sin pagos, el traceback de Django señalaba `claims/models.py, line 82, in pending_amount: return self.amount_claimed - Decimal(str(self.total_paid()))`. Seguí la llamada hasta `total_paid()` y vi que devolvía `None`. Al buscar los usos de `total_paid()`, encontré el mismo problema en `views.py`.
+- **Cómo se solucionó**: `total_paid()` devuelve `0` si no hay pagos. Agregué un test sobre un siniestro sin pagos, que falla con el código original.
+  ```python
+  def total_paid(self):
+      return self.payments.aggregate(total=Sum("amount"))["total"] or 0
+  ```
+
+# Problemas encontrados, fuera del scope del challenge
 - **Pagos sobre un siniestro rechazado o ya liquidado**: hoy se permiten, y uno rechazado puede pasar a liquidado. No está claro qué debería pasar.
 - El `email` de `class Client` no es unico, es posible que sea intencional. En caso de querer corregirlo habria que crear y aplicar una migracion (makemigrations y migrate). Si ya hay clientes con correos repetidos, la migración fallaria hasta corregir esos datos. En caso de hacerlo, tener en cuenta que la restriccion distingue mayusculas de minusculas
 - **(SOLUCIONADO) `ClaimPayment.amount` era `FloatField`**, a diferencia del resto de los montos de dinero (`DecimalField`), lo que podía causar errores de redondeo (p. ej. `0.70 + 0.10 = 0.7999999999999999`, y un siniestro pagado completo no quedaba liquidado).
