@@ -1,9 +1,10 @@
 """
-Safety net: tests for the current behavior that is correct.
+Red de seguridad: tests del comportamiento actual que es correcto.
 
-Each test builds its own data with the make_* helpers below. Django's TestCase
-wraps every test in a transaction that is rolled back, so tests are independent
-from each other and from the demo data (the test DB only has migrations).
+Cada test arma sus propios datos con los helpers make_* de abajo. El TestCase de
+Django envuelve cada test en una transacción que se revierte al terminar, así que
+los tests son independientes entre sí y de los datos de demo (la base de test solo
+tiene las migraciones).
 """
 
 from datetime import date
@@ -74,7 +75,7 @@ class ClaimDetailTests(TestCase):
         self.assertEqual(response.context["pending_amount"], Decimal("500"))
 
     def test_claim_without_payments_shows_zero_paid_and_full_pending(self):
-        # Ticket 1: SUM over no rows is NULL -> total_paid() was None and the page crashed.
+        # Ticket 1: SUM sin filas da NULL -> total_paid() devolvía None y la página se rompía.
         claim = make_claim(amount_claimed=Decimal("1000.00"))
 
         response = self.client.get(reverse("claims:detail", args=[claim.pk]))
@@ -107,6 +108,15 @@ class ClaimListTests(TestCase):
         self.assertContains(response, "SIN-AAA")
         self.assertNotContains(response, "SIN-BBB")
 
+    def test_insurer_filter_adds_no_queries_and_ignores_garbage(self):
+        insurer = make_insurer()
+        for _ in range(5):
+            make_claim(policy=make_policy(insurer=insurer))
+
+        with self.assertNumQueries(3):
+            self.client.get(self.url, {"insurer": insurer.pk})
+        self.assertEqual(self.client.get(self.url, {"insurer": "abc"}).status_code, 200)
+
     def test_filters_by_status(self):
         make_claim(number="SIN-AAA", status=Claim.Status.IN_REVIEW)
         make_claim(number="SIN-BBB", status=Claim.Status.OPEN)
@@ -131,7 +141,7 @@ class ClaimListTests(TestCase):
         make_claim(number="SIN-AAA", policy=juan)
         make_claim(number="SIN-BBB", policy=maria)
 
-        # Spans first and last name: must keep working after optimizing the search.
+        # Abarca nombre y apellido: tiene que seguir funcionando con la búsqueda optimizada.
         response = self.client.get(self.url, {"q": "juan pér"})
 
         self.assertContains(response, "SIN-AAA")
@@ -155,8 +165,77 @@ class ClaimListTests(TestCase):
         for number in ("SIN-BBB", "SIN-CCC", "SIN-DDD"):
             self.assertNotContains(response, number)
 
+    def test_paginates_and_keeps_filters_in_links(self):
+        policy = make_policy()
+        for _ in range(30):
+            make_claim(policy=policy, status=Claim.Status.OPEN)
 
-# Frozen "today" so the month-based counter doesn't depend on when tests run.
+        response = self.client.get(self.url, {"status": Claim.Status.OPEN})
+        page = response.context["page"]
+        self.assertEqual(len(page.object_list), 20)  # per_page por defecto
+        self.assertEqual(page.paginator.count, 30)
+        self.assertContains(response, "per_page=20&page=2")
+        # Primero el más nuevo, como en Claim.Meta.ordering.
+        self.assertEqual(page.object_list[0], Claim.objects.order_by("-reported_at", "-id").first())
+
+        # Los números de página fuera de rango o inválidos no dan 404: muestran la última o la primera.
+        last = self.client.get(self.url, {"page": 99}).context["page"]
+        self.assertEqual(len(last.object_list), 10)
+        self.assertEqual(self.client.get(self.url, {"page": "x"}).context["page"].number, 1)
+
+    def test_filters_by_reported_date_range_inclusive(self):
+        make_claim(number="SIN-FEB", reported_at=date(2026, 2, 28))
+        make_claim(number="SIN-MAR1", reported_at=date(2026, 3, 1))
+        make_claim(number="SIN-MAR31", reported_at=date(2026, 3, 31))
+        make_claim(number="SIN-APR", reported_at=date(2026, 4, 1))
+
+        response = self.client.get(self.url, {"date_from": "2026-03-01", "date_to": "2026-03-31"})
+        self.assertContains(response, "SIN-MAR1")
+        self.assertContains(response, "SIN-MAR31")
+        self.assertNotContains(response, "SIN-FEB")
+        self.assertNotContains(response, "SIN-APR")
+        self.assertContains(response, 'value="2026-03-01"')  # el input conserva la fecha
+
+        # También funciona con un solo extremo; las fechas inválidas se ignoran en vez de romper la vista.
+        response = self.client.get(self.url, {"date_from": "2026-04-01", "date_to": "2026-02-30"})
+        self.assertContains(response, "SIN-APR")
+        self.assertNotContains(response, "SIN-MAR31")
+
+    def test_per_page_is_selectable_and_validated(self):
+        for _ in range(60):
+            make_claim()
+
+        def page_size(per_page):
+            return len(self.client.get(self.url, {"per_page": per_page}).context["page"].object_list)
+
+        self.assertEqual(page_size(50), 50)
+        # Los valores fuera de las opciones usan el default (no se permiten tamaños arbitrarios).
+        for bad in ("7", "100000", "abc", "-50"):
+            with self.subTest(per_page=bad):
+                self.assertEqual(page_size(bad), 20)
+
+    def test_query_count_does_not_grow_with_rows(self):
+        for _ in range(10):
+            claim = make_claim()
+            make_payment(claim, Decimal("100"))
+            make_payment(claim, Decimal("50"))
+
+        # count + página de siniestros (con póliza, cliente, aseguradora y total pagado) + aseguradoras
+        with self.assertNumQueries(3):
+            response = self.client.get(self.url)
+        self.assertContains(response, "150,00")
+
+    def test_search_query_count_does_not_grow_with_rows(self):
+        for _ in range(10):
+            make_claim(policy=make_policy(client=make_client("Juan", "Pérez")))
+
+        # La búsqueda corre en la base: las mismas 3 queries, sin consultas por siniestro.
+        with self.assertNumQueries(3):
+            response = self.client.get(self.url, {"q": "juan pér"})
+        self.assertEqual(response.context["page"].paginator.count, 10)
+
+
+# "Hoy" fijo para que el contador mensual no dependa de cuándo se corren los tests.
 @patch("claims.views.timezone.localdate", return_value=date(2026, 3, 15))
 class DashboardTests(TestCase):
     url = reverse("claims:dashboard")
@@ -183,7 +262,7 @@ class DashboardTests(TestCase):
         self.assertEqual(response.context["reported_this_month"], 2)
 
     def test_reported_this_month_ignores_same_month_of_other_years(self, _localdate):
-        # Ticket 2: the filter only compared the month number, so March 2025 counted too.
+        # Ticket 2: el filtro solo comparaba el número de mes, así que marzo de 2025 también contaba.
         make_claim(reported_at=date(2026, 3, 10))
         make_claim(reported_at=date(2025, 3, 10))
         make_claim(reported_at=date(2024, 3, 10))
@@ -225,7 +304,7 @@ class ClaimCreateTests(TestCase):
 
         claim = Claim.objects.get(number="SIN-NEW")
         self.assertEqual(claim.status, Claim.Status.OPEN)
-        # Don't follow the redirect: this test is about creation, not the detail page.
+        # No se sigue el redirect: este test es sobre la creación, no sobre la página de detalle.
         self.assertRedirects(
             response, reverse("claims:detail", args=[claim.pk]), fetch_redirect_response=False
         )
@@ -278,7 +357,7 @@ class RegisterPaymentTests(TestCase):
         self.assertEqual(claim.status, Claim.Status.SETTLED)
 
     def test_decimal_payments_completing_amount_settle_claim(self):
-        # With FloatField 0.70 + 0.10 == 0.7999999999999999 < 0.80 and the claim never settled.
+        # Con FloatField, 0.70 + 0.10 == 0.7999999999999999 < 0.80 y el siniestro nunca quedaba liquidado.
         claim = make_claim(amount_claimed=Decimal("0.80"), status=Claim.Status.IN_REVIEW)
         make_payment(claim, Decimal("0.70"))
 
@@ -287,7 +366,7 @@ class RegisterPaymentTests(TestCase):
         claim.refresh_from_db()
         self.assertEqual(claim.status, Claim.Status.SETTLED)
 
-    # test validates that the form
+    # El form rechaza montos no positivos: ni cambia el estado ni se guarda el pago.
     def test_rejects_non_positive_amount(self):
         for amount in ("0", "-10"):
             with self.subTest(amount=amount):

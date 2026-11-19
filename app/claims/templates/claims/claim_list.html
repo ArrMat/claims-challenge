@@ -21,6 +21,16 @@
                 <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
                 {% endfor %}
             </select></div>
+        <div><label class="muted" for="date_from">Desde</label><br>
+            <input type="date" id="date_from" name="date_from" value="{{ filters.date_from|date:'Y-m-d' }}"></div>
+        <div><label class="muted" for="date_to">Hasta</label><br>
+            <input type="date" id="date_to" name="date_to" value="{{ filters.date_to|date:'Y-m-d' }}"></div>
+        <div><label class="muted">Por página</label><br>
+            <select name="per_page">
+                {% for n in per_page_options %}
+                <option value="{{ n }}" {% if filters.per_page == n %}selected{% endif %}>{{ n }}</option>
+                {% endfor %}
+            </select></div>
         <button type="submit">Filtrar</button>
         <a class="btn btn-secondary" href="{% url 'claims:list' %}">Limpiar</a>
     </form>
@@ -40,11 +50,24 @@
             <td>{{ claim.policy.insurer.name }}</td>
             <td><span class="badge badge-{{ claim.status }}">{{ claim.get_status_display }}</span></td>
             <td class="num">{{ claim.amount_claimed|intcomma }}</td>
-            <td class="num">{{ claim.total_paid|default:0|intcomma }}</td>
+            <td class="num">{{ claim.paid_total|intcomma }}</td>
         </tr>
         {% empty %}
         <tr><td colspan="8" class="muted">No hay siniestros con esos filtros.</td></tr>
         {% endfor %}
     </table>
+    {% if page.has_other_pages %}
+    <nav class="pagination">
+        {% if page.has_previous %}
+        <a class="btn btn-secondary" href="?{{ filters_qs }}&page=1">« Primera</a>
+        <a class="btn btn-secondary" href="?{{ filters_qs }}&page={{ page.previous_page_number }}">‹ Anterior</a>
+        {% endif %}
+        <span class="muted">Página {{ page.number }} de {{ page.paginator.num_pages }} ({{ page.paginator.count }} siniestros)</span>
+        {% if page.has_next %}
+        <a class="btn btn-secondary" href="?{{ filters_qs }}&page={{ page.next_page_number }}">Siguiente ›</a>
+        <a class="btn btn-secondary" href="?{{ filters_qs }}&page={{ page.paginator.num_pages }}">Última »</a>
+        {% endif %}
+    </nav>
+    {% endif %}
 </div>
 {% endblock %}

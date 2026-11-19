@@ -1,10 +1,18 @@
+from datetime import date
+from decimal import Decimal
+from urllib.parse import urlencode
+
 from django.contrib import messages
-from django.db.models import Count
+from django.core.paginator import Paginator
+from django.db.models import Count, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce, Concat
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from .forms import ClaimForm, PaymentForm
-from .models import Claim, Insurer, Policy
+from .models import Claim, ClaimPayment, Insurer
+
+PER_PAGE_OPTIONS = (20, 50, 100, 500, 1000)  # el primero es el default
 
 
 def dashboard(request):
@@ -20,14 +28,25 @@ def dashboard(request):
 
 
 def claim_list(request):
-    claims = Claim.objects.all()
+    # Total pagado con una subconsulta correlacionada: se calcula solo para las filas de la página.
+    # Un JOIN + GROUP BY (annotate(Sum("payments__amount"))) agregaría todo el conjunto filtrado,
+    # encarecería el count() del paginador y haría que Django ignore Meta.ordering.
+    paid = (
+        ClaimPayment.objects.filter(claim=OuterRef("pk"))
+        .order_by()
+        .values("claim")
+        .annotate(total=Sum("amount"))
+        .values("total")
+    )
+    # select_related evita el N+1 del template (póliza, cliente y aseguradora por fila).
+    claims = Claim.objects.select_related("policy__client", "policy__insurer").annotate(
+        paid_total=Coalesce(Subquery(paid), Value(Decimal("0")))
+    )
 
     insurer_id = request.GET.get("insurer")
-    if insurer_id:
-        policy_ids = list(
-            Policy.objects.filter(insurer_id=insurer_id).values_list("id", flat=True)
-        )
-        claims = claims.filter(policy_id__in=policy_ids)
+    # Un id no numérico se ignora: filtrar con él levanta ValueError (error 500).
+    if insurer_id and insurer_id.isdigit():
+        claims = claims.filter(policy__insurer_id=insurer_id)
 
     status = request.GET.get("status")
     if status:
@@ -35,19 +54,44 @@ def claim_list(request):
 
     search = request.GET.get("q", "").strip()
     if search:
-        matching_ids = [
-            claim.id
-            for claim in Claim.objects.all()
-            if search.lower() in claim.policy.client.full_name.lower()
-            or search.lower() in claim.number.lower()
-        ]
-        claims = claims.filter(id__in=matching_ids)
+        # Búsqueda en SQL. Concat arma el nombre completo para que "juan pér" encuentre a "Juan Pérez".
+        # NOTA: LIKE '%q%' no usa índices btree (recorre la tabla); si se vuelve lento, agregar un índice GIN con pg_trgm.
+        claims = claims.annotate(
+            client_name=Concat("policy__client__first_name", Value(" "), "policy__client__last_name")
+        ).filter(Q(client_name__icontains=search) | Q(number__icontains=search))
+
+    # Rango opcional sobre reported_at, con ambos extremos incluidos. Las fechas inválidas se ignoran.
+    dates = {}
+    for param, lookup in (("date_from", "reported_at__gte"), ("date_to", "reported_at__lte")):
+        try:
+            dates[param] = date.fromisoformat(request.GET.get(param, ""))
+        except ValueError:
+            continue
+        claims = claims.filter(**{lookup: dates[param]})
+
+    # Solo se aceptan los tamaños de PER_PAGE_OPTIONS; cualquier otro valor usa el default.
+    per_page = request.GET.get("per_page", "")
+    per_page = int(per_page) if per_page.isdigit() and int(per_page) in PER_PAGE_OPTIONS else PER_PAGE_OPTIONS[0]
+
+    filters = {
+        "insurer": insurer_id or "",
+        "status": status or "",
+        "q": search,
+        "date_from": dates.get("date_from", ""),
+        "date_to": dates.get("date_to", ""),
+        "per_page": per_page,
+    }
+    # get_page no da 404: una página inválida muestra la primera y una fuera de rango, la última.
+    page = Paginator(claims, per_page).get_page(request.GET.get("page"))
 
     context = {
-        "claims": claims,
+        "claims": page,
+        "page": page,
         "insurers": Insurer.objects.all(),
         "statuses": Claim.Status.choices,
-        "filters": {"insurer": insurer_id or "", "status": status or "", "q": search},
+        "per_page_options": PER_PAGE_OPTIONS,
+        "filters": filters,
+        "filters_qs": urlencode({k: v for k, v in filters.items() if v}),
     }
     return render(request, "claims/claim_list.html", context)
 
