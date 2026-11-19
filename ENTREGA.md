@@ -13,6 +13,16 @@
       return self.payments.aggregate(total=Sum("amount"))["total"] or 0
   ```
 
+## Ticket 2
+- **Causa**: en `views.py:dashboard`, el contador "Denunciados por mes" filtraba solo por número de mes (`reported_at__month=today.month`) y no por año. Entonces sumaba los siniestros del mismo mes de cualquier año (marzo de 2026 + marzo de 2025, etc.).
+- **Cómo se encontró**: el ticket decía que el contador de "Denunciados por mes" mostraba más siniestros de los esperados. Seguí el dato desde el template hasta la vista (`dashboard.html` → `views.py:dashboard`) y encontré el filtro sin año.
+- **Cómo se solucionó**: se agregó el filtro por año.
+  ```python
+  "reported_this_month": Claim.objects.filter(
+      reported_at__year=today.year, reported_at__month=today.month
+  ).count(),
+  ```
+
 # Problemas encontrados, fuera del scope del challenge
 - **Pagos sobre un siniestro rechazado o ya liquidado**: hoy se permiten, y uno rechazado puede pasar a liquidado. No está claro qué debería pasar.
 - El `email` de `class Client` no es unico, es posible que sea intencional. En caso de querer corregirlo habria que crear y aplicar una migracion (makemigrations y migrate). Si ya hay clientes con correos repetidos, la migración fallaria hasta corregir esos datos. En caso de hacerlo, tener en cuenta que la restriccion distingue mayusculas de minusculas

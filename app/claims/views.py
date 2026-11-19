@@ -13,7 +13,7 @@ def dashboard(request):
         "today": today,
         "open_claims": Claim.objects.filter(status=Claim.Status.OPEN).count(),
         "in_review_claims": Claim.objects.filter(status=Claim.Status.IN_REVIEW).count(),
-        "reported_this_month": Claim.objects.filter(reported_at__month=today.month).count(),
+        "reported_this_month": Claim.objects.filter(reported_at__year=today.year, reported_at__month=today.month).count(),
         "by_status": Claim.objects.values("status").annotate(total=Count("id")).order_by("status"),
     }
     return render(request, "claims/dashboard.html", context)

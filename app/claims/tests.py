@@ -182,6 +182,16 @@ class DashboardTests(TestCase):
 
         self.assertEqual(response.context["reported_this_month"], 2)
 
+    def test_reported_this_month_ignores_same_month_of_other_years(self, _localdate):
+        # Ticket 2: the filter only compared the month number, so March 2025 counted too.
+        make_claim(reported_at=date(2026, 3, 10))
+        make_claim(reported_at=date(2025, 3, 10))
+        make_claim(reported_at=date(2024, 3, 10))
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.context["reported_this_month"], 1)
+
     def test_groups_claims_by_status(self, _localdate):
         make_claim(status=Claim.Status.OPEN)
         make_claim(status=Claim.Status.OPEN)
