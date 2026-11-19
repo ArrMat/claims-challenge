@@ -84,7 +84,7 @@ def register_payment(request, pk):
         if claim.status == Claim.Status.OPEN:
             claim.status = Claim.Status.IN_REVIEW
 
-        if claim.total_paid() >= float(claim.amount_claimed):
+        if claim.total_paid() >= claim.amount_claimed:
             claim.status = Claim.Status.SETTLED
 
         claim.save()

@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.core.validators import MinValueValidator, RegexValidator
 from django.db import models
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 only_digits = RegexValidator(r"^\d+$", "Only digits are allowed.")
 
@@ -79,17 +79,21 @@ class Claim(models.Model):
         return self.payments.aggregate(total=Sum("amount"))["total"]
 
     def pending_amount(self):
-        return self.amount_claimed - Decimal(str(self.total_paid()))
+        return self.amount_claimed - self.total_paid()
 
 
 class ClaimPayment(models.Model):
     claim = models.ForeignKey(Claim, on_delete=models.PROTECT, related_name="payments")
     paid_at = models.DateField()
-    amount = models.FloatField()
+    amount = models.DecimalField(
+        max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     reference = models.CharField(max_length=60, blank=True)
 
     class Meta:
         ordering = ["paid_at", "id"]
+        constraints = [models.CheckConstraint( condition=Q(amount__gt=0),name="claimpayment_amount_positive")]
+
 
     def __str__(self):
         return f"{self.claim.number} - {self.amount}"

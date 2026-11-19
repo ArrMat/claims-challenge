@@ -100,7 +100,7 @@ class Command(BaseCommand):
                     ClaimPayment(
                         claim=claim,
                         paid_at=min(claim.reported_at + timedelta(days=15 * (n + 1)), today),
-                        amount=float(per_payment),
+                        amount=per_payment,
                         reference=f"TRX-{claim.pk}-{n + 1}",
                     )
                 )

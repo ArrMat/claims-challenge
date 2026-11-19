@@ -1,0 +1,12 @@
+## Problemas encontrados, fuera del scope del challenge
+- **Pagos sobre un siniestro rechazado o ya liquidado**: hoy se permiten, y uno rechazado puede pasar a liquidado. No está claro qué debería pasar.
+- El `email` de `class Client` no es unico, es posible que sea intencional. En caso de querer corregirlo habria que crear y aplicar una migracion (makemigrations y migrate). Si ya hay clientes con correos repetidos, la migración fallaria hasta corregir esos datos. En caso de hacerlo, tener en cuenta que la restriccion distingue mayusculas de minusculas
+- **(SOLUCIONADO) `ClaimPayment.amount` era `FloatField`**, a diferencia del resto de los montos de dinero (`DecimalField`), lo que podía causar errores de redondeo (p. ej. `0.70 + 0.10 = 0.7999999999999999`, y un siniestro pagado completo no quedaba liquidado).
+  - Se cambió a `DecimalField(max_digits=14, decimal_places=2)` y se generó la migración.
+  - Se eliminaron las conversiones a `float` en `views.py` (comparación para liquidar) y en `seed_demo.py`.
+  - Riesgo de la migración: PostgreSQL redondea cada valor a 2 decimales; solo cambiaría un saldo si había montos con más de 2 decimales reales. Se verificó con consultas previas que ningún pago ni total por siniestro cambia.
+  - Se agregó un test que reproduce el caso (`0.70 + 0.10` sobre un siniestro de `0.80` debe quedar liquidado).
+- **(SOLUCIONADO) El monto de `ClaimPayment` podía ser no positivo**: la única validación estaba en el form.
+  - Se agregó `MinValueValidator(Decimal("0.01"))` al campo (valida en forms/`full_clean`).
+  - Se agregó `CheckConstraint(condition=Q(amount__gt=0), name="claimpayment_amount_positive")` para garantizarlo a nivel base de datos, aunque se guarde sin pasar por el form.
+  - Incluido en la misma migración.
