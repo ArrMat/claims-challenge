@@ -10,4 +10,5 @@ urlpatterns = [
     path("claims/new/", views.claim_create, name="create"),
     path("claims/<int:pk>/", views.claim_detail, name="detail"),
     path("claims/<int:pk>/payments/new/", views.register_payment, name="payment_create"),
+    path("payments/<int:pk>/void/", views.void_payment, name="payment_void"),
 ]

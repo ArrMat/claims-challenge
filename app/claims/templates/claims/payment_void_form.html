@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% block title %}Anular pago{% endblock %}
+{% block content %}
+<h1>Anular pago — {{ payment.claim.number }}</h1>
+<div class="card">
+    <p><strong>Fecha:</strong> {{ payment.paid_at|date:"d/m/Y" }} — <strong>Monto:</strong> {{ payment.amount|intcomma }}{% if payment.reference %} — <strong>Referencia:</strong> {{ payment.reference }}{% endif %}</p>
+    <p class="muted">El pago no se borra: queda registrado como anulado y deja de contar en lo pagado del siniestro.</p>
+    <form method="post">{% csrf_token %}
+        {{ form.non_field_errors }}
+        {% for field in form %}
+        <div class="form-row">{{ field.label_tag }} {{ field }} {{ field.errors }}</div>
+        {% endfor %}
+        <button type="submit">Anular</button>
+        <a class="btn btn-secondary" href="{% url 'claims:detail' payment.claim_id %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}

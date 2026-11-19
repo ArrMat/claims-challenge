@@ -12,8 +12,11 @@ from decimal import Decimal
 from itertools import count
 from unittest.mock import patch
 
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from .models import Claim, ClaimPayment, Client, Insurer, Policy
 
@@ -379,4 +382,91 @@ class RegisterPaymentTests(TestCase):
                 claim.refresh_from_db()
                 self.assertEqual(claim.status, Claim.Status.OPEN)
                 self.assertFalse(claim.payments.exists())
+
+    def test_payment_on_rejected_claim_keeps_it_rejected(self):
+        # refresh_status() no toca los rechazados (antes un pago total lo pasaba a liquidado).
+        claim = make_claim(amount_claimed=Decimal("1000.00"), status=Claim.Status.REJECTED)
+
+        self.post_payment(claim, "1000")
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, Claim.Status.REJECTED)
+
+
+class VoidPaymentTests(TestCase):
+    def post_void(self, payment, reason="Pago duplicado"):
+        return self.client.post(reverse("claims:payment_void", args=[payment.pk]), {"reason": reason})
+
+    def test_void_keeps_payment_and_records_when_and_why(self):
+        claim = make_claim()
+        payment = make_payment(claim, Decimal("300"))
+
+        response = self.post_void(payment, "  Monto equivocado  ")
+
+        self.assertRedirects(
+            response, reverse("claims:detail", args=[claim.pk]), fetch_redirect_response=False
+        )
+        payment.refresh_from_db()
+        self.assertIsNotNone(payment.voided_at)
+        self.assertEqual(payment.void_reason, "Monto equivocado")
+        self.assertEqual(claim.payments.count(), 1)  # no se borró
+
+    def test_voided_payment_does_not_count_as_paid(self):
+        claim = make_claim(number="SIN-VOID", amount_claimed=Decimal("1000.00"))
+        make_payment(claim, Decimal("300"))
+        self.post_void(make_payment(claim, Decimal("200")))
+
+        self.assertEqual(claim.total_paid(), Decimal("300"))
+        self.assertEqual(claim.pending_amount(), Decimal("700"))
+        detail = self.client.get(reverse("claims:detail", args=[claim.pk]))
+        self.assertContains(detail, "Pago duplicado")  # el anulado se sigue viendo
+        listing = self.client.get(reverse("claims:list"))
+        self.assertEqual(listing.context["page"].object_list[0].paid_total, Decimal("300"))
+
+    def test_voiding_settled_claim_moves_it_back_to_in_review(self):
+        claim = make_claim(amount_claimed=Decimal("1000.00"), status=Claim.Status.SETTLED)
+        make_payment(claim, Decimal("600"))
+        payment = make_payment(claim, Decimal("400"))
+
+        self.post_void(payment)
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, Claim.Status.IN_REVIEW)
+
+    def test_voiding_only_payment_does_not_reopen_claim(self):
+        claim = make_claim(status=Claim.Status.IN_REVIEW)
+
+        self.post_void(make_payment(claim, Decimal("300")))
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, Claim.Status.IN_REVIEW)
+
+    def test_reason_is_required(self):
+        payment = make_payment(make_claim(), Decimal("300"))
+
+        for reason in ("", "   "):
+            with self.subTest(reason=reason):
+                response = self.post_void(payment, reason)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("reason", response.context["form"].errors)
+                payment.refresh_from_db()
+                self.assertIsNone(payment.voided_at)
+
+    def test_cannot_void_twice(self):
+        payment = make_payment(make_claim(), Decimal("300"))
+        payment.void("Primera")
+
+        with self.assertRaises(ValidationError):
+            payment.void("Segunda")
+        self.post_void(payment, "Segunda")
+
+        payment.refresh_from_db()
+        self.assertEqual(payment.void_reason, "Primera")
+
+    def test_db_rejects_voided_payment_without_reason(self):
+        payment = make_payment(make_claim(), Decimal("300"))
+
+        with self.assertRaises(IntegrityError):
+            ClaimPayment.objects.filter(pk=payment.pk).update(voided_at=timezone.now())
 

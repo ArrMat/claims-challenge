@@ -67,8 +67,109 @@
     - **cantidad de queries**: dos `assertNumQueries(3)`, uno sin búsqueda y otro con `q`.
   - **Límite conocido**: `LIKE '%...%'` no usa índices btree. Si la búsqueda se vuelve lenta, se agrega un índice GIN con `pg_trgm`.
 
-# Problemas encontrados, fuera del scope del challenge
+# Parte 2 - 
+## Decision 1 - Como modelar la anulacion
+- Decision tomada: Agregar campos voided_at y void_reason a ClaimPayment: Migracion chica, facil de filtrar, tiene todo lo solicitado, pero mezcla en el mismo modelo los datos del pago y de la anulacion. Opcionalmente: CheckConstraint como base que garantice que voided_at y void_reason se cargan juntos (o están los dos vacíos, o el motivo no está vacío. Así no puede existir un pago anulado sin motivo). 
+- Opciones descartadas: 
+  - Modelo aparte: separaria bien responsabilidades, pero cada consulta agregaria un JOIN y selec_related
+  - Campo `status` (`active`/`voided`), ademas de campos `voided_at` y `void_reason`: se puede extender a mas status (por ej `pending`), pero estaria de mas para lo que se pide.
+  - Pago negativo: Queda la historia completa y no se modifican filas, pero choca con las validaciones actuales y es confuso para la UI y el status
+
+## Decision 2 - Que el pago anulado no se sume al total pagado
+- Decision tomada: Un QuerySet con `.active()` (`ClaimPayment.objects.active()`, `claim.payments.active()`). Hoy lo pagado se calcula en dos lugares (`Claim.total_paid()` y la subquery `paid` de `claim_list`), y ambos pasan a usar `.active()`. Es explicito y el filtro queda definido en un solo lugar.
+- Opciones descartadas:
+  - Filtrar a mano (`voided_at__isnull=True`) en cada lugar: es lo mas simple, pero el dia que alguien agregue un tercer calculo se lo puede olvidar.
+  - Manager por defecto que oculte los anulados: es peligroso, porque tambien los esconde del admin y del detalle, y se pide justamente que queden registrados y visibles.
+
+## Decision 3 - Que el estado del siniestro quede coherente
+- Decision tomada: Recalcular el estado a partir de los pagos activos con un unico metodo (`Claim.refresh_status()`), usado tanto al registrar un pago como al anularlo. Hoy `register_payment` sube el estado (OPEN → IN_REVIEW → SETTLED) pero nunca lo baja, asi que al anular un pago un siniestro podria quedar SETTLED con saldo pendiente. Reglas:
+  - Si lo pagado cubre lo reclamado → SETTLED.
+  - Si estaba SETTLED y ya no lo cubre → IN_REVIEW.
+  - REJECTED no se toca.
+  - No se vuelve a OPEN: que haya existido un pago ya indica que el siniestro fue revisado.
+- Opciones descartadas:
+  - Volver a OPEN si no queda ningun pago activo: defendible, pero se pierde un IN_REVIEW que pudo haberse puesto a mano.
+  - Historial de estados: lo mas correcto, pero excede lo que se pide.
+
+## Decision 4 - Donde va la logica
+- Decision tomada: Un metodo en el modelo (`payment.void(reason)`). Corre dentro de `transaction.atomic()`, bloquea el siniestro con `select_for_update()` para que una anulacion y un pago simultaneos no dejen el estado mal calculado, rechaza un pago ya anulado y llama a `claim.refresh_status()`. Se puede reutilizar y testear sin pasar por la vista.
+- Opciones descartadas:
+  - En la vista (como `register_payment` hoy): no se puede reutilizar ni testear aislado.
+  - Capa de servicios (`services.py`): una capa mas que no se justifica para una sola operacion.
+
+## Decision 5 - Como se ve en pantalla
+- Decision tomada: En el detalle del siniestro, un boton "Anular" por pago que lleva a un form chico con el motivo obligatorio y se envia por POST con CSRF. Los pagos anulados se siguen mostrando (tachados, con fecha y motivo de anulacion).
+- Opciones descartadas:
+  - Form inline o modal con `confirm()`: mas rapido de usar, pero con menos validacion visible del motivo.
+
+# Parte 4 - FBV vs CBV
+
+## 1. Qué clase base usaría para cada vista
+| Vista | Clase base | Por qué |
+|---|---|---|
+| `dashboard` | `TemplateView` | Solo GET, no gira alrededor de un objeto ni un form. Todo va en `get_context_data()`. |
+| `claim_list` | `ListView` | Es un listado paginado de un modelo: justo lo que resuelve. |
+| `claim_detail` | `DetailView` | Un objeto por `pk` con 404 incluido; pagos y totales en `get_context_data()`. |
+| `claim_create` | `CreateView` (+ `SuccessMessageMixin`) | `ModelForm` que crea un objeto y redirige. Es el caso de manual. |
+| `register_payment` | `CreateView` | Crea un `ClaimPayment` desde un `ModelForm`, pero con varios overrides (ver abajo). |
+| `void_payment` | `View` (o `FormView`) | No crea ni edita con `form.save()`: llama a `payment.void(reason)`. |
+
+**`claim_list` → `ListView`**
+- `get_queryset()`: el `select_related`, la subconsulta `paid_total` y los filtros (aseguradora, estado, `q`, fechas).
+- `get_paginate_by()`: devuelve el `per_page` validado contra `PER_PAGE_OPTIONS`.
+- `get_context_data()`: aseguradoras, estados, `filters` y `filters_qs`.
+- Me da `paginator`, `page_obj` e `is_paginated` en el contexto sin escribirlos.
+- Ojo, diferencias de comportamiento con lo que hice:
+  - `ListView.paginate_queryset()` tira **404** con una página inválida o fuera de rango (salvo `page=last`). Hoy uso `Paginator.get_page()`, que muestra la primera/última. Para mantenerlo habría que sobreescribir `paginate_queryset()`.
+  - El contexto cambia: `object_list`/`claims` pasa a ser la lista de la página y la página es `page_obj`. Habría que ajustar el template.
+
+**`register_payment` → `CreateView`**
+- `form_class = PaymentForm`, `template_name = "claims/payment_form.html"`.
+- `setup()` o `dispatch()`: busca el `Claim` del `pk` de la URL (`get_object_or_404`), porque el objeto de la vista es el pago, no el siniestro.
+- `get_context_data()`: agrega `claim`.
+- `form_valid()`: se reemplaza entero (sin `super()`), porque el `super()` hace `form.save()` fuera de la transacción. Adentro va el `atomic()` + `select_for_update()` + `refresh_status()` y el mensaje.
+- `get_success_url()`: al detalle del siniestro.
+- La gano por el manejo de GET/POST/form inválido. Si sumara más lógica (ej. validar contra el saldo pendiente o el estado), pasaría a `FormView` o `View`.
+
+**`void_payment` → `View`**
+- Tiene un chequeo previo que redirige (pago ya anulado), un `Form` que no es `ModelForm` y la acción real es `payment.void()`, que puede fallar con `ValidationError`.
+- Un `UpdateView` asume que el form guarda el objeto: tendría que pisar `get_form_kwargs()` (no le paso `instance`) y `form_valid()`. Casi nada del genérico se usaría.
+- `FormView` + `get_object` en `setup()` también sirve; `View` con `get()`/`post()` queda más explícito.
+
+## 2. Cuándo genérica y cuándo `View`
+
+- **Genérica** cuando la vista es el patrón: listar un modelo, mostrar uno, crear/editar con un `ModelForm` y redirigir. Se escribe solo lo distinto (queryset, form, URL de éxito) y el resto es comportamiento conocido y testeado.
+- **View simple** cuando la vista es una acción o no se parece al patrón:
+  - acciones por POST (anular, aprobar, cambiar estado),
+  - varios forms o varios modelos en la misma pantalla,
+  - respuestas que no son HTML (JSON, CSV, redirects condicionales).
+- **Cuando estorba**:
+  - Si termino sobreescribiendo casi todos los hooks, o reemplazando `form_valid()`/`get()` sin llamar a `super()`, ya no uso el genérico: solo lo heredo.
+  - Comportamientos por defecto que no se ven: el 404 de `ListView` con páginas inválidas, `form.save()` dentro de `form_valid()`, `self.object` que se setea en distintos momentos según la clase, nombres de template y de contexto inferidos.
+  - `void_payment` es el ejemplo de este proyecto.
+
+## 3. Leer y depurar código ajeno
+
+**Ventajas de CBV**
+- Menos código repetido y estructura uniforme: si el equipo conoce `ListView`, sabe dónde buscar (`get_queryset`, `get_context_data`, `form_valid`).
+- GET y POST separados en métodos.
+- Reutilización con mixins (`LoginRequiredMixin`, permisos, mensajes) en vez de copiar código.
+
+**Desventajas con CBV**
+- El flujo no está escrito en la vista: está repartido en la cadena de herencia (MRO). Para saber qué corre hay que conocer la jerarquía (ccbv.co.uk ayuda mucho).
+- Hay cosas implícitas: variables del contexto (`object`, `page_obj`, `form`), nombres de template, `success_url`. Un `grep` en el proyecto no las encuentra.
+- Los tracebacks y los breakpoints pasan por varias capas de Django antes de llegar a tu código.
+
+**FBV**
+- Se lee de arriba a abajo y lo que ves es lo que corre: depurar es poner un breakpoint y seguir.
+- A cambio, cada vista resuelve lo mismo a su manera (paginación, 404, form inválido), y eso hay que leerlo cada vez.
+
+En resumen: CBV es más rápido de leer **si conocés las clases base** y más lento si no. FBV siempre se lee igual.
+
+
+# Extra: Problemas encontrados fuera del scope del challenge, cosas a solucionar con mas tiempo
 - **Pagos sobre un siniestro rechazado o ya liquidado**: hoy se permiten, y uno rechazado puede pasar a liquidado. No está claro qué debería pasar.
+  - **(SOLUCIONADO) un siniestro REJECTED que recibía pagos por el total pasaba a SETTLED**: Ahora sigue en REJECTED
 - El `email` de `class Client` no es unico, es posible que sea intencional. En caso de querer corregirlo habria que crear y aplicar una migracion (makemigrations y migrate). Si ya hay clientes con correos repetidos, la migración fallaria hasta corregir esos datos. En caso de hacerlo, tener en cuenta que la restriccion distingue mayusculas de minusculas
 - **(SOLUCIONADO) `ClaimPayment.amount` era `FloatField`**, a diferencia del resto de los montos de dinero (`DecimalField`), lo que podía causar errores de redondeo (p. ej. `0.70 + 0.10 = 0.7999999999999999`, y un siniestro pagado completo no quedaba liquidado).
   - Se cambió a `DecimalField(max_digits=14, decimal_places=2)` y se generó la migración.
@@ -79,3 +180,9 @@
   - Se agregó `MinValueValidator(Decimal("0.01"))` al campo (valida en forms/`full_clean`).
   - Se agregó `CheckConstraint(condition=Q(amount__gt=0), name="claimpayment_amount_positive")` para garantizarlo a nivel base de datos, aunque se guarde sin pasar por el form.
   - Incluido en la misma migración.
+- **Se puede pagar de más**. PaymentForm no compara el monto con el saldo pendiente. El pendiente puede quedar negativo, y anular un pago no lo corrige. Es un problema que ya venía de antes, pero con la anulación se nota más.
+- La DB no rechaza un motivo de anulacion hecho solo de espacios
+- Historial de estados del siniestro
+- Busqueda LIKE '%q%': indice GIN con pg_trgm
+- Autenticacion
+  - No queda registrado quién anuló un pago

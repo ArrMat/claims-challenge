@@ -39,3 +39,8 @@ class PaymentForm(forms.ModelForm):
         if amount <= 0:
             raise forms.ValidationError("El monto debe ser positivo.")
         return amount
+
+
+class VoidPaymentForm(forms.Form):
+    # CharField recorta espacios por defecto: un motivo de solo espacios cuenta como vacío.
+    reason = forms.CharField(label="Motivo", widget=forms.Textarea(attrs={"rows": 3}))

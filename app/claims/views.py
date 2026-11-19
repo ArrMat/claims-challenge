@@ -3,13 +3,15 @@ from decimal import Decimal
 from urllib.parse import urlencode
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
+from django.db import transaction
 from django.db.models import Count, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce, Concat
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import ClaimForm, PaymentForm
+from .forms import ClaimForm, PaymentForm, VoidPaymentForm
 from .models import Claim, ClaimPayment, Insurer
 
 PER_PAGE_OPTIONS = (20, 50, 100, 500, 1000)  # el primero es el default
@@ -32,7 +34,8 @@ def claim_list(request):
     # Un JOIN + GROUP BY (annotate(Sum("payments__amount"))) agregaría todo el conjunto filtrado,
     # encarecería el count() del paginador y haría que Django ignore Meta.ordering.
     paid = (
-        ClaimPayment.objects.filter(claim=OuterRef("pk"))
+        ClaimPayment.objects.active()
+        .filter(claim=OuterRef("pk"))
         .order_by()
         .values("claim")
         .annotate(total=Sum("amount"))
@@ -121,18 +124,34 @@ def register_payment(request, pk):
     form = PaymentForm(request.POST or None)
 
     if request.method == "POST" and form.is_valid():
-        payment = form.save(commit=False)
-        payment.claim = claim
-        payment.save()
-
-        if claim.status == Claim.Status.OPEN:
-            claim.status = Claim.Status.IN_REVIEW
-
-        if claim.total_paid() >= claim.amount_claimed:
-            claim.status = Claim.Status.SETTLED
-
-        claim.save()
+        # Mismo lock que ClaimPayment.void(): un pago y una anulación simultáneos no pisan el estado.
+        with transaction.atomic():
+            claim = Claim.objects.select_for_update().get(pk=claim.pk)
+            payment = form.save(commit=False)
+            payment.claim = claim
+            payment.save()
+            claim.refresh_status()
         messages.success(request, "Pago registrado.")
         return redirect("claims:detail", pk=claim.pk)
 
     return render(request, "claims/payment_form.html", {"form": form, "claim": claim})
+
+
+def void_payment(request, pk):
+    payment = get_object_or_404(ClaimPayment.objects.select_related("claim"), pk=pk)
+    if payment.voided_at:
+        messages.error(request, "El pago ya está anulado.")
+        return redirect("claims:detail", pk=payment.claim_id)
+
+    form = VoidPaymentForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            payment.void(form.cleaned_data["reason"])
+        except ValidationError as error:
+            # P. ej. otra request lo anuló entre el GET y el POST.
+            form.add_error(None, error)
+        else:
+            messages.success(request, "Pago anulado.")
+            return redirect("claims:detail", pk=payment.claim_id)
+
+    return render(request, "claims/payment_void_form.html", {"form": form, "payment": payment})
